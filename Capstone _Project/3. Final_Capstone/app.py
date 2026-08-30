@@ -7,8 +7,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
-import streamlit as st
+from sklearn.ensemble import StackingRegressor
+from sklearn.linear_model import RidgeCV
 from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+import streamlit as st
 
 # ----------------------------------------------------------------------
 # Page config & Styling
@@ -53,14 +57,14 @@ st.markdown(
     """
     <div class="hero">
         <h1>🏡 Advanced House Price Predictor</h1>
-        <p>Interactive Real Estate Valuation, Geospatial Analytics, and Investment Sensitivity Analysis powered by XGBoost.</p>
+        <p>Interactive Real Estate Valuation, Geospatial Analytics, and Investment Sensitivity Analysis powered by Ensemble Stacking Model (XGBoost + LightGBM + CatBoost).</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 # ----------------------------------------------------------------------
-# House Imagery Section (المكان الذي أُضيفت فيه الصور)
+# House Imagery Section
 # ----------------------------------------------------------------------
 col_img1, col_img2, col_img3 = st.columns(3)
 house_images = [
@@ -71,6 +75,7 @@ house_images = [
 for col, url in zip([col_img1, col_img2, col_img3], house_images):
     with col:
         st.image(url, use_column_width=True)
+
 # ----------------------------------------------------------------------
 # Data Loading & Model Setup
 # ----------------------------------------------------------------------
@@ -160,20 +165,36 @@ def train_model(data: pd.DataFrame, features: list):
         X, y, test_size=0.2, random_state=42
     )
 
-    model = XGBRegressor(n_estimators=250, learning_rate=0.07, random_state=42)
-    model.fit(X_train, y_train)
+    # Stacking Regressor setup
+    xgb = XGBRegressor(n_estimators=250, learning_rate=0.07, random_state=42)
+    lgb = LGBMRegressor(n_estimators=250, learning_rate=0.07, random_state=42, verbose=-1)
+    cat = CatBoostRegressor(iterations=250, learning_rate=0.07, verbose=0, random_seed=42)
 
-    preds_log = model.predict(X_test)
+    stacking_model = StackingRegressor(
+        estimators=[
+            ('xgb', xgb),
+            ('lgb', lgb),
+            ('cat', cat)
+        ],
+        final_estimator=RidgeCV()
+    )
+
+    stacking_model.fit(X_train, y_train)
+
+    # Train XGBoost separately to extract Feature Importances for visualization
+    xgb.fit(X_train, y_train)
+
+    preds_log = stacking_model.predict(X_test)
     preds = np.expm1(preds_log)
     y_test_orig = np.expm1(y_test)
 
     mae = mean_absolute_error(y_test_orig, preds)
     r2 = r2_score(y_test_orig, preds)
     importances = pd.Series(
-        model.feature_importances_, index=features
+        xgb.feature_importances_, index=features
     ).sort_values(ascending=False)
 
-    return model, mae, r2, importances
+    return stacking_model, mae, r2, importances
 
 
 model, mae, r2, importances = train_model(df, FEATURES)
@@ -302,7 +323,7 @@ with tab1:
         fig_imp = px.bar(
             importances.head(8)[::-1],
             orientation="h",
-            title="Top Drivers for this Valuation",
+            title="Top Drivers for this Valuation (XGBoost Estimator)",
             labels={"value": "Importance", "index": "Feature"},
             color=importances.head(8)[::-1].values,
             color_continuous_scale="Teal",
@@ -391,8 +412,7 @@ with tab2:
 with tab3:
     st.subheader("💡 Sensitivity & Investment What-If Analysis")
     st.caption(
-        "See how expanding your living area impacts predicted valuation in real"
-        " time."
+        "See how expanding your living area impacts predicted valuation in real time."
     )
 
     sqft_range = [
@@ -429,5 +449,5 @@ with tab3:
 
 st.markdown("---")
 st.caption(
-    f"Data Source: {data_source} · Model: XGBoost Regressor · Capstone Project."
+    f"Data Source: {data_source} · Model: Stacking Regressor (XGBoost + LightGBM + CatBoost) · Capstone Project."
 )
